@@ -159,21 +159,15 @@ Parameters:
     Default: generalPurpose
     Description: Select the performance mode of the file system.
     Type: String
-  EfsCopyDataFrom:
-    Description: Clone EFS from existing EFS
-    Type: String
-  WPDirectory:
-    Description: Wordpress directory
-    Type: String
   SecurityGroup:
     Description: Select the Amazon EFS security group.
-    Type: AWS::EC2::SecurityGroup::Id   
+    Type: AWS::EC2::SecurityGroup::Id
   Subnet:
     Description: Select existing subnets.
     Type: List<AWS::EC2::Subnet::Id>
 
 Conditions:
-  
+
   NumberOfSubnets1:
       !Equals [ 1, !Ref NumberOfSubnets ]
   NumberOfSubnets2:
@@ -211,7 +205,7 @@ Conditions:
   Subnet4: !Or
     - !Condition NumberOfSubnets5
     - !Condition NumberOfSubnets6
-  Subnet5: !Condition NumberOfSubnets6  
+  Subnet5: !Condition NumberOfSubnets6
   UseAWS-ManagedCMK:
     !Equals ['', !Ref Cmk]
 
@@ -397,7 +391,7 @@ Resources:
           efs_add_storage:
             - efs-add-storage
         efs-add-storage:
-          files:              
+          files:
             /tmp/efs-add-storage.sh:
               content: !Sub |
                 #!/bin/bash -x
@@ -405,8 +399,6 @@ Resources:
                 FILE_SYSTEM_ID=$1
                 DATA_DIRECTORY=$2
                 GROWTH=$3
-                COPY_SYSTEM_ID=$4
-                WP_DIR=$5
 
                 if [ $# -lt 3 ]; then
                   echo "Invalid # of arguments. Require: file system id, data directory, file system growth (GiB) "
@@ -467,21 +459,6 @@ Resources:
                   fi
                 done
 
-                #Sync data from 
-                
-                if [[ ! -z $COPY_SYSTEM_ID ]];
-                  then
-                    sudo mkdir -p /$COPY_SYSTEM_ID
-                    sudo chown ec2-user:ec2-user /$COPY_SYSTEM_ID
-                    sudo mountpoint -q /$COPY_SYSTEM_ID || sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 $COPY_SYSTEM_ID.efs.$region.amazonaws.com:/ /$COPY_SYSTEM_ID
-                    COPY_SOURCE=/$COPY_SYSTEM_ID
-                    if [ -d "/$COPY_SOURCE/$WP_DIR" ]; then
-                      COPY_SOURCE=/$COPY_SYSTEM_ID/$WP_DIR #If the wordpress folder is there, ensure we get only the contents
-                    fi
-                    sudo mkdir -p /$FILE_SYSTEM_ID/$WP_DIR
-                    sudo rsync -r $COPY_SOURCE/* /$FILE_SYSTEM_ID/$WP_DIR/
-                fi
-
                 # set ASG to zero which terminates instance
                 aws autoscaling update-auto-scaling-group --auto-scaling-group-name $asg_name --desired-capacity 0 --region $region
 
@@ -517,13 +494,13 @@ Resources:
             "- yum --enablerepo=epel install nload -y\n",
             "- ntpstat\n",
             "- /opt/aws/bin/cfn-init --configsets efs_add_storage --verbose --stack ", !Ref 'AWS::StackName', " --resource LaunchConfiguration --region ", !Ref 'AWS::Region',"\n",
-            "- /tmp/efs-add-storage.sh ", !Ref ElasticFileSystem, " throughput_data ", !Ref Growth, " ", !Ref EfsCopyDataFrom, " ", !Ref WPDirectory, "\n",
+            "- /tmp/efs-add-storage.sh ", !Ref ElasticFileSystem, " throughput_data ", !Ref Growth,"\n",
             "- /opt/aws/bin/cfn-signal -e $? --stack ", !Ref 'AWS::StackName', " --resource AutoScalingGroup --region ", !Ref 'AWS::Region',"\n"
             ]
           ]
   EfsSizeMonitorFunction:
     Type: AWS::Lambda::Function
-    Properties: 
+    Properties:
       Code:
         ZipFile: !Sub |
           import boto3
@@ -596,16 +573,16 @@ Resources:
       ManagedPolicyArns:
       - arn:aws:iam::aws:policy/CloudWatchFullAccess
       - arn:aws:iam::aws:policy/AmazonElasticFileSystemReadOnlyAccess
-  EfsLambdaPermission: 
+  EfsLambdaPermission:
     Type: AWS::Lambda::Permission
-    Properties: 
+    Properties:
       FunctionName: !Ref EfsSizeMonitorFunction
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt EfsSizeMonitorEvent.Arn
   EfsSizeMonitorEvent:
     Type: AWS::Events::Rule
-    Properties: 
+    Properties:
       Description: Scheduled event to update SizeInBytes EFS CloudWatch metric
       Name: !Join [ '', [ 'efs-', !Ref ElasticFileSystem, '-size-monitor-scheduled-event' ] ]
       ScheduleExpression: rate(1 minute)

@@ -409,13 +409,13 @@ Mappings:
     sa-east-1:
       AMI: ami-286f2a44
     us-east-1:
-      AMI: ami-55ef662f
+      AMI: ami-467ca739
     us-east-2:
-      AMI: ami-15e9c770
+      AMI: ami-976152f2
     us-west-1:
-      AMI: ami-a51f27c5
+      AMI: ami-46e1f226
     us-west-2:
-      AMI: ami-d2f06baa
+      AMI: ami-6b8cef13
 
 Resources:
 
@@ -455,7 +455,7 @@ Resources:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       Cooldown: 60
-      HealthCheckGracePeriod: 120
+      HealthCheckGracePeriod: 180
       HealthCheckType: ELB
       LaunchConfigurationName:
         !If
@@ -1138,6 +1138,7 @@ Resources:
       AWS::CloudFormation::Init:
         configSets:
           deploy_webserver:
+            - install_cfn
             - install_webserver
             - build_cacheclient
             - build_wordpress
@@ -1148,17 +1149,53 @@ Resources:
             - install_wordpress
             - install_opcache
             - start_webserver
+          redeploy_webserver:
+            - install_webserver
+            - build_cacheclient
+            - build_opcache
+            - install_cacheclient
+            - install_opcache
+            - start_webserver
+        install_cfn:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackName}
+                region=${AWS::Region}
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.WebLaunchConfiguration71.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebLaunchConfiguration71 --configsets redeploy_webserver --region ${AWS::Region}
+                runas=root
+              mode: "000400"
+              owner: "root"
+              group: "root"
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
         install_webserver:
           packages:
             yum:
               awslogs: []
               nginx: []
-              mysql57: []
+              mysql56: []
               php71: []
               php71-devel: []
               php7-pear: []
               php71-mysqlnd: []
               php71-pecl-igbinary: []
+              php71-pecl-apcu: []
               php71-fpm: []
           files:
             /tmp/config_webserver.sh:
@@ -1166,18 +1203,22 @@ Resources:
                 !Sub |
                   #!/bin/bash -xe
                   mkdir -p /var/www/shared/conf/php-fpm-7.1.d
+                  mkdir -p /var/www/shared/conf/nginx/conf.d
                   mkdir -p /var/www/shared/conf/nginx/global
                   mkdir -p /var/www/shared/conf/nginx/sites-available
                   mkdir -p /var/www/shared/conf/nginx/sites-enabled
+                  curl https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/nginx/nginx.conf > /etc/nginx/nginx.conf
                   echo 'include=/var/www/shared/conf/php-fpm-7.1.d/*.conf' >> /etc/php-fpm.conf
+                  sudo sed -i 's/user = apache/user = nginx/' /etc/php-fpm-7.1.d/www.conf
+                  sudo sed -i 's/group = apache/user = nginx/' /etc/php-fpm-7.1.d/www.conf
                   if [ ! -f /var/www/shared/conf/nginx/global/restrictions.conf ]; then
-                    wget -P /var/www/shared/conf/nginx/global/restrictions.conf https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/nginx/restrictions.conf
+                    wget -P /var/www/shared/conf/nginx/global https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/nginx/restrictions.conf
                   fi
-                  if [ ! -f /var/www/shared/conf/nginx/global/throttling.conf ]; then
-                    wget -P /var/www/shared/conf/nginx/global/restrictions.conf https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/nginx/throttling.conf
+                  if [ ! -f /var/www/shared/conf/nginx/conf.d/throttling.conf ]; then
+                    wget -P /var/www/shared/conf/nginx/conf.d https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/nginx/throttling.conf
                   fi
                   if [ ! -f /var/www/shared/conf/nginx/global/wordpress.conf ]; then
-                    wget -P /var/www/shared/conf/nginx/global/restrictions.conf https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/nginx/wordpress.conf
+                    wget -P /var/www/shared/conf/nginx/global https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/nginx/wordpress.conf
                   fi
               mode: 000500
               owner: root
@@ -1189,18 +1230,18 @@ Resources:
                     "#!/bin/bash -xe\n",
                     "if [ ! -f /var/www/shared/conf/nginx/sites-available/default.conf ]; then\n",
                     "   touch /var/www/shared/conf/nginx/sites-available/default.conf\n",
-                    "   echo 'server {\n",
-                    "   echo '  listen 80 default_server;\n",
-                    "   echo '  listen [::]:80 default_server;\n",
-                    "   echo '  server_name _;\n",
-                    "   echo '  root /var/www/shared/", !Ref WPDirectory, ";\n",
-                    "   echo '\n",
-                    "   echo '  index index.php;\n",
-                    "   echo '  charset utf-8;\n",
-                    "   echo '\n",
-                    "   echo '  include /var/www/shared/config/nginx/global/restrictions.conf;\n",
-                    "   echo '  include /var/www/shared/config/nginx/global/wordpress.conf;\n",
-                    "   echo '}\n",
+                    "   echo 'server {' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  listen 80 default_server;' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  listen [::]:80 default_server;' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  server_name _;' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  root /var/www/shared/sites/", !Ref WPDirectory, ";' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  index index.php;' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  charset utf-8;' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  include /var/www/shared/conf/nginx/global/restrictions.conf;' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '  include /var/www/shared/conf/nginx/global/wordpress.conf;' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
+                    "   echo '}' >> /var/www/shared/conf/nginx/sites-available/default.conf\n",
                     "   ln -s /var/www/shared/conf/nginx/sites-available/default.conf /var/www/shared/conf/nginx/sites-enabled/\n",
                     "fi\n"
                   ]
@@ -1249,8 +1290,8 @@ Resources:
                   sed -i 's/;opcache.file_cache=.*/opcache.file_cache=\/var\/www\/.opcache/' /etc/php-7.1.d/10-opcache.ini
                   sed -i 's/opcache.memory_consumption=.*/opcache.memory_consumption=512/' /etc/php-7.1.d/10-opcache.ini
                   # download opcache-instance.php to verify opcache status
-                  if [ ! -f /var/www/shared/${WPDirectory}/opcache-instanceid.php ]; then
-                      wget -P /var/www/shared/${WPDirectory}/ https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/opcache-instanceid.php
+                  if [ ! -f /var/www/shared/sites/${WPDirectory}/opcache-instance-id.php ]; then
+                      wget -P /var/www/shared/sites/${WPDirectory}/ https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/opcache-instance-id.php
                   fi
               mode: 000500
               owner: root
@@ -1270,10 +1311,10 @@ Resources:
                     "fi\n",
                     "\n",
                     "# make site directory\n",
-                    "if [ ! -d /var/www/shared/", !Ref WPDirectory, " ]; then\n",
-                    "   mkdir -p /var/www/shared/", !Ref WPDirectory, "\n",
+                    "if [ ! -d /var/www/shared/sites/", !Ref WPDirectory, " ]; then\n",
+                    "   mkdir -p /var/www/shared/sites/", !Ref WPDirectory, "\n",
                     "\n",
-                    "   cd /var/www/shared/", !Ref WPDirectory, "\n",
+                    "   cd /var/www/shared/sites/", !Ref WPDirectory, "\n",
                     "   # install wordpress if not installed\n",
                     "   # use public alb host name if wp domain name was empty\n",
                     "   if ! $(wp core is-installed --allow-root); then\n",
@@ -1281,23 +1322,23 @@ Resources:
                     "       wp core config --dbname='", !Ref DatabaseName, "' --dbuser='", !Ref DatabaseMasterUsername, "' --dbpass='", !Ref DatabaseMasterPassword, "' --dbhost='", !Ref DatabaseClusterEndpointAddress, "' --dbprefix=wp_ --allow-root\n",
                     "       wp core install --url=", !If [ NoWPDomainName, !Ref PublicAlbHostname, !Join [ "", [ "'http://www.", !Ref WPDomainName, "'" ] ] ], " --title='", !Ref WPTitle, "' --admin_user='", !Ref WPAdminUsername, "' --admin_password='", !Ref WPAdminPassword, "' --admin_email='", !Ref WPAdminEmail, "' --skip-email --allow-root\n",
                     "       wp plugin install w3-total-cache\n",
-                    "       sed -i \"/$table_prefix = 'wp_';/ a \\define('WP_HOME', 'http://' . \\$_SERVER['HTTP_HOST']); \" /var/www/shared/", !Ref WPDirectory, "/wp-config.php\n",
-                    "       sed -i \"/$table_prefix = 'wp_';/ a \\define('WP_SITEURL', 'http://' . \\$_SERVER['HTTP_HOST']); \" /var/www/shared/", !Ref WPDirectory, "/wp-config.php\n",
+                    "       sed -i \"/$table_prefix = 'wp_';/ a \\define('WP_HOME', 'http://' . \\$_SERVER['HTTP_HOST']); \" /var/www/shared/sites/", !Ref WPDirectory, "/wp-config.php\n",
+                    "       sed -i \"/$table_prefix = 'wp_';/ a \\define('WP_SITEURL', 'http://' . \\$_SERVER['HTTP_HOST']); \" /var/www/shared/sites/", !Ref WPDirectory, "/wp-config.php\n",
                     "       # enable HTTPS in wp-config.php if ACM Public SSL Certificate parameter was not empty\n",
-                            !If [ NoSslCertificate, !Join [ '', [ "       sed -i \"/$table_prefix = 'wp_';/ a \\# No ACM Public SSL Certificate \" /var/www/shared/", !Ref WPDirectory, "/wp-config.php\n" ] ] , !Join [ '', [ "       sed -i \"/$table_prefix = 'wp_';/ a \\$_SERVER['HTTPS'] = 'on';\" /var/www/shared/", !Ref WPDirectory, "/wp-config.php\n" ] ] ],
+                            !If [ NoSslCertificate, !Join [ '', [ "       sed -i \"/$table_prefix = 'wp_';/ a \\# No ACM Public SSL Certificate \" /var/www/shared/sites/", !Ref WPDirectory, "/wp-config.php\n" ] ] , !Join [ '', [ "       sed -i \"/$table_prefix = 'wp_';/ a \\$_SERVER['HTTPS'] = 'on';\" /var/www/shared/sites/", !Ref WPDirectory, "/wp-config.php\n" ] ] ],
                     "\n",
                     "       # set permissions of wordpress site directories\n",
-                    "       chown -R apache:apache /var/www/shared/", !Ref WPDirectory, "\n",
-                    "       chmod u+wrx /var/www/shared/", !Ref WPDirectory, "/wp-content/*\n",
-                    "       if [ ! -f /var/www/shared/", !Ref WPDirectory, "/opcache-instanceid.php ]; then\n",
-                    "         wget -P /var/www/shared/", !Ref WPDirectory, "/ https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/opcache-instanceid.php\n",
+                    "       chown -R nginx:nginx /var/www/shared/sites/", !Ref WPDirectory, "\n",
+                    "       chmod u+wrx /var/www/shared/sites/", !Ref WPDirectory, "/wp-content/*\n",
+                    "       if [ ! -f /var/www/shared/sites/", !Ref WPDirectory, "/opcache-instance-id.php ]; then\n",
+                    "         wget -P /var/www/shared/sites/", !Ref WPDirectory, "/ https://s3.amazonaws.com/it-aws/wordpress-efs/latest/bits/opcache-instance-id.php\n",
                     "       fi\n",
                     "   fi\n",
                     "   RESULT=$?\n",
                     "   if [ $RESULT -eq 0 ]; then\n",
-                    "       touch /var/www/shared/", !Ref WPDirectory, "/wordpress.initialized\n",
+                    "       touch /var/www/shared/sites/", !Ref WPDirectory, "/wordpress.initialized\n",
                     "         else\n",
-                    "       touch /var/www/shared/", !Ref WPDirectory, "/wordpress.failed\n",
+                    "       touch /var/www/shared/sites/", !Ref WPDirectory, "/wordpress.failed\n",
                     "   fi\n",
                     "fi\n"
                   ]
@@ -1368,6 +1409,7 @@ Resources:
             mkdir -p /var/www/shared
             mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ${ElasticFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/shared
             /opt/aws/bin/cfn-init --configsets deploy_webserver --verbose --stack ${AWS::StackName} --resource WebLaunchConfiguration71 --region ${AWS::Region}
+            /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
             /opt/aws/bin/cfn-signal --exit-code $? --stack ${AWS::StackName} --resource WebAutoScalingGroup --region ${AWS::Region}
 
 
